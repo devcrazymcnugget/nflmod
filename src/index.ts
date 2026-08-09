@@ -76,6 +76,37 @@ async function syncBotCatalog(env: Env): Promise<{ ok: boolean; synced: number; 
   return { ok: true, synced };
 }
 
+async function syncBotLoanEvent(
+  env: Env,
+  itemName: string,
+  minecraftName: string,
+  delta: number,
+  eventId: string,
+): Promise<{ ok: boolean; reason?: string; status?: number; result?: unknown }> {
+  if (!env.BOT_API_KEY) return { ok: false, reason: "bot_api_key_missing" };
+  try {
+    const response = await fetch(`${BOT_API_BASE}/api/minecraft/loan-event`, {
+      method: "POST",
+      headers: {
+        "X-API-Key": env.BOT_API_KEY,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify({
+        item_name: itemName,
+        minecraft_name: minecraftName,
+        delta,
+        event_id: eventId,
+      }),
+    });
+    const result = await response.json().catch(() => null);
+    return response.ok
+      ? { ok: true, status: response.status, result }
+      : { ok: false, status: response.status, reason: "bot_api_rejected_event", result };
+  } catch {
+    return { ok: false, reason: "bot_api_unreachable" };
+  }
+}
+
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, PUT, POST, OPTIONS",
@@ -248,10 +279,13 @@ export default {
         .find(name => normalizeItemName(name) === normalizeItemName(itemName));
       const item = canonicalName ? status.items?.[canonicalName] : undefined;
       if (!item) return jsonResponse({ error: "unknown_item" }, 404);
+      const matchedItemName = canonicalName as string;
 
       const oldCount = typeof item.count === "number" && Number.isFinite(item.count) ? item.count : 0;
       const newCount = Math.max(0, Math.floor(oldCount + delta));
       const now = new Date().toISOString();
+      const previousBorrower = typeof item.borrowedBy === "string" ? item.borrowedBy : "";
+      const eventId = crypto.randomUUID();
       item.count = newCount;
       item.available = newCount > 0;
       item.updatedAt = now;
@@ -262,6 +296,14 @@ export default {
       status.updatedAt = now;
 
       await env.USER_NOTIFICATION.put("nfl-loan-status", JSON.stringify(status));
+
+      const botSync = await syncBotLoanEvent(
+        env,
+        matchedItemName,
+        delta < 0 ? playerName : (previousBorrower || playerName),
+        delta,
+        eventId,
+      );
 
       let webhookSent = false;
       if (delta < 0 && env.DISCORD_WEBHOOK_URL) {
@@ -292,7 +334,16 @@ export default {
           webhookSent = false;
         }
       }
-      return jsonResponse({ ok: true, itemName: canonicalName, count: newCount, available: item.available, playerName, webhookSent });
+      return jsonResponse({
+        ok: true,
+        eventId,
+        itemName: matchedItemName,
+        count: newCount,
+        available: item.available,
+        playerName,
+        webhookSent,
+        botSync,
+      });
     }
 
     return jsonResponse({ error: "not_found" }, 404);
