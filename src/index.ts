@@ -1,6 +1,7 @@
 export interface Env {
   USER_NOTIFICATION: KVNamespace;
   NFL_WRITE_TOKEN: string;
+  DISCORD_WEBHOOK_URL?: string;
 }
 
 const CORS_HEADERS = {
@@ -134,7 +135,37 @@ export default {
       status.updatedAt = now;
 
       await env.USER_NOTIFICATION.put("nfl-loan-status", JSON.stringify(status));
-      return jsonResponse({ ok: true, itemName, count: newCount, available: item.available, playerName });
+
+      let webhookSent = false;
+      if (delta < 0 && env.DISCORD_WEBHOOK_URL) {
+        try {
+          const discordResponse = await fetch(env.DISCORD_WEBHOOK_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+            body: JSON.stringify({
+              username: "NFL Kistenwächter",
+              allowed_mentions: { parse: [] },
+              embeds: [{
+                title: "📦 Item ausgeliehen",
+                description: "Ein Nutzer der NFL Public Mod hat ein eingetragenes Item entnommen.",
+                color: 0xff9900,
+                timestamp: now,
+                fields: [
+                  { name: "Spieler", value: playerName, inline: true },
+                  { name: "Item", value: itemName, inline: true },
+                  { name: "Anzahl", value: String(Math.abs(delta)), inline: true },
+                  { name: "Verbleibend", value: String(newCount), inline: true },
+                ],
+                footer: { text: "NFLMOD Cloud • Minecraft 1.21.11" },
+              }],
+            }),
+          });
+          webhookSent = discordResponse.ok;
+        } catch {
+          webhookSent = false;
+        }
+      }
+      return jsonResponse({ ok: true, itemName, count: newCount, available: item.available, playerName, webhookSent });
     }
 
     return jsonResponse({ error: "not_found" }, 404);
