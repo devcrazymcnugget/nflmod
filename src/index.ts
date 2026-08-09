@@ -72,6 +72,45 @@ export default {
       return jsonResponse({ ok: true });
     }
 
+    if (request.method === "POST" && url.pathname === "/admin/catalog") {
+      const authorization = request.headers.get("Authorization") ?? "";
+      if (!env.NFL_WRITE_TOKEN || authorization !== `Bearer ${env.NFL_WRITE_TOKEN}`) {
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      let requestBody: unknown;
+      try {
+        requestBody = await request.json();
+      } catch {
+        return jsonResponse({ error: "invalid_json" }, 400);
+      }
+      const catalog = (requestBody as { items?: unknown })?.items;
+      if (typeof catalog !== "object" || catalog === null || Array.isArray(catalog)) {
+        return jsonResponse({ error: "invalid_catalog" }, 400);
+      }
+      const stored = await env.USER_NOTIFICATION.get("nfl-loan-status");
+      const status = stored === null ? { updatedAt: "", items: {} as Record<string, any> } : JSON.parse(stored);
+      if (!status.items || typeof status.items !== "object") status.items = {};
+      const now = new Date().toISOString();
+      let added = 0;
+      for (const [name, raw] of Object.entries(catalog as Record<string, unknown>)) {
+        if (!name || name.length > 256 || typeof raw !== "object" || raw === null) continue;
+        const observed = raw as { count?: unknown; iconId?: unknown };
+        const count = typeof observed.count === "number" && Number.isFinite(observed.count)
+          ? Math.max(0, Math.floor(observed.count)) : 0;
+        const iconId = typeof observed.iconId === "string" && observed.iconId.length <= 256
+          ? observed.iconId : "minecraft:barrier";
+        if (!status.items[name]) {
+          status.items[name] = { available: count > 0, count, iconId, updatedAt: now, lastChangedBy: "", borrowedBy: "" };
+          added++;
+        } else if (iconId && iconId !== "minecraft:barrier") {
+          status.items[name].iconId = iconId;
+        }
+      }
+      status.updatedAt = now;
+      await env.USER_NOTIFICATION.put("nfl-loan-status", JSON.stringify(status));
+      return jsonResponse({ ok: true, added });
+    }
+
     if (request.method === "POST" && url.pathname === "/event") {
       let event: unknown;
       try {
