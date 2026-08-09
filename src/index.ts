@@ -83,15 +83,17 @@ export default {
         return jsonResponse({ error: "invalid_event" }, 400);
       }
 
-      const { itemName, delta, iconId } = event as {
+      const { itemName, delta, iconId, playerName } = event as {
         itemName?: unknown;
         delta?: unknown;
         iconId?: unknown;
+        playerName?: unknown;
       };
       if (
         typeof itemName !== "string" || itemName.length < 1 || itemName.length > 256 ||
         typeof delta !== "number" || !Number.isSafeInteger(delta) || delta === 0 || Math.abs(delta) > 100_000 ||
-        (iconId !== undefined && (typeof iconId !== "string" || iconId.length > 256))
+        (iconId !== undefined && (typeof iconId !== "string" || iconId.length > 256)) ||
+        typeof playerName !== "string" || playerName.length < 1 || playerName.length > 64
       ) {
         return jsonResponse({ error: "invalid_event" }, 400);
       }
@@ -101,7 +103,14 @@ export default {
 
       let status: {
         updatedAt?: string;
-        items?: Record<string, { available?: boolean; count?: number; iconId?: string; updatedAt?: string }>;
+        items?: Record<string, {
+          available?: boolean;
+          count?: number;
+          iconId?: string;
+          updatedAt?: string;
+          lastChangedBy?: string;
+          borrowedBy?: string;
+        }>;
       };
       try {
         status = JSON.parse(stored);
@@ -118,11 +127,14 @@ export default {
       item.count = newCount;
       item.available = newCount > 0;
       item.updatedAt = now;
+      item.lastChangedBy = playerName;
+      if (newCount === 0 && delta < 0) item.borrowedBy = playerName;
+      if (newCount > 0) item.borrowedBy = "";
       if (typeof iconId === "string" && iconId.length > 0) item.iconId = iconId;
       status.updatedAt = now;
 
       await env.USER_NOTIFICATION.put("nfl-loan-status", JSON.stringify(status));
-      return jsonResponse({ ok: true, itemName, count: newCount, available: item.available });
+      return jsonResponse({ ok: true, itemName, count: newCount, available: item.available, playerName });
     }
 
     return jsonResponse({ error: "not_found" }, 404);
