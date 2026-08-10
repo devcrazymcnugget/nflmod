@@ -134,6 +134,7 @@ export default {
         return jsonResponse({ error: "invalid_json" }, 400);
       }
       const catalog = (requestBody as { items?: unknown })?.items;
+      const rawContainer = (requestBody as { container?: unknown })?.container;
       if (typeof catalog !== "object" || catalog === null || Array.isArray(catalog)) {
         return jsonResponse({ error: "invalid_catalog" }, 400);
       }
@@ -158,6 +159,30 @@ export default {
         } else if (iconId && iconId !== "minecraft:barrier") {
           status.items[targetName].iconId = iconId;
         }
+      }
+      if (rawContainer !== undefined) {
+        if (typeof rawContainer !== "object" || rawContainer === null) {
+          return jsonResponse({ error: "invalid_container" }, 400);
+        }
+        const candidate = rawContainer as Partial<TrackedContainer>;
+        if (typeof candidate.dimension !== "string" || candidate.dimension.length > 128 ||
+            !Number.isSafeInteger(candidate.x) || !Number.isSafeInteger(candidate.y) || !Number.isSafeInteger(candidate.z)) {
+          return jsonResponse({ error: "invalid_container" }, 400);
+        }
+        const tracked: TrackedContainer = {
+          dimension: candidate.dimension,
+          x: candidate.x as number,
+          y: candidate.y as number,
+          z: candidate.z as number,
+          label: typeof candidate.label === "string" ? candidate.label.slice(0, 128) : "",
+          type: typeof candidate.type === "string" ? candidate.type.slice(0, 32) : "",
+        };
+        if (!Array.isArray(status.containers)) status.containers = [];
+        const existing = status.containers.findIndex((container: TrackedContainer) =>
+          container.dimension === tracked.dimension && container.x === tracked.x &&
+          container.y === tracked.y && container.z === tracked.z);
+        if (existing >= 0) status.containers[existing] = tracked;
+        else status.containers.push(tracked);
       }
       status.updatedAt = now;
       await env.USER_NOTIFICATION.put("nfl-loan-status", JSON.stringify(status));
