@@ -11,6 +11,16 @@ const normalizeItemName = (name: string): string => name.trim().toLocaleLowerCas
 type CloudStatus = {
   updatedAt: string;
   items: Record<string, any>;
+  containers?: TrackedContainer[];
+};
+
+type TrackedContainer = {
+  dimension: string;
+  x: number;
+  y: number;
+  z: number;
+  label?: string;
+  type?: string;
 };
 
 async function syncBotLoanEvent(
@@ -154,6 +164,46 @@ export default {
       return jsonResponse({ ok: true, added });
     }
 
+    if (request.method === "POST" && url.pathname === "/admin/containers") {
+      const authorization = request.headers.get("Authorization") ?? "";
+      if (!env.NFL_WRITE_TOKEN || authorization !== `Bearer ${env.NFL_WRITE_TOKEN}`) {
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      let requestBody: unknown;
+      try {
+        requestBody = await request.json();
+      } catch {
+        return jsonResponse({ error: "invalid_json" }, 400);
+      }
+      const rawContainers = (requestBody as { containers?: unknown })?.containers;
+      if (!Array.isArray(rawContainers) || rawContainers.length > 10_000) {
+        return jsonResponse({ error: "invalid_containers" }, 400);
+      }
+      const containers: TrackedContainer[] = [];
+      for (const raw of rawContainers) {
+        if (typeof raw !== "object" || raw === null) return jsonResponse({ error: "invalid_container" }, 400);
+        const candidate = raw as Partial<TrackedContainer>;
+        if (typeof candidate.dimension !== "string" || candidate.dimension.length > 128 ||
+            !Number.isSafeInteger(candidate.x) || !Number.isSafeInteger(candidate.y) || !Number.isSafeInteger(candidate.z)) {
+          return jsonResponse({ error: "invalid_container" }, 400);
+        }
+        containers.push({
+          dimension: candidate.dimension,
+          x: candidate.x as number,
+          y: candidate.y as number,
+          z: candidate.z as number,
+          label: typeof candidate.label === "string" ? candidate.label.slice(0, 128) : "",
+          type: typeof candidate.type === "string" ? candidate.type.slice(0, 32) : "",
+        });
+      }
+      const stored = await env.USER_NOTIFICATION.get("nfl-loan-status");
+      const status: CloudStatus = stored === null ? { updatedAt: "", items: {} } : JSON.parse(stored);
+      status.containers = containers;
+      status.updatedAt = new Date().toISOString();
+      await env.USER_NOTIFICATION.put("nfl-loan-status", JSON.stringify(status));
+      return jsonResponse({ ok: true, containers: containers.length });
+    }
+
     if (request.method === "POST" && url.pathname === "/event") {
       let event: unknown;
       try {
@@ -166,17 +216,25 @@ export default {
         return jsonResponse({ error: "invalid_event" }, 400);
       }
 
-      const { itemName, delta, iconId, playerName } = event as {
+      const { itemName, delta, iconId, playerName, dimension, x, y, z } = event as {
         itemName?: unknown;
         delta?: unknown;
         iconId?: unknown;
         playerName?: unknown;
+        dimension?: unknown;
+        x?: unknown;
+        y?: unknown;
+        z?: unknown;
       };
       if (
         typeof itemName !== "string" || itemName.length < 1 || itemName.length > 256 ||
         typeof delta !== "number" || !Number.isSafeInteger(delta) || delta === 0 || Math.abs(delta) > 100_000 ||
         (iconId !== undefined && (typeof iconId !== "string" || iconId.length > 256)) ||
-        typeof playerName !== "string" || playerName.length < 1 || playerName.length > 64
+        typeof playerName !== "string" || playerName.length < 1 || playerName.length > 64 ||
+        typeof dimension !== "string" || dimension.length < 1 || dimension.length > 128 ||
+        typeof x !== "number" || !Number.isSafeInteger(x) ||
+        typeof y !== "number" || !Number.isSafeInteger(y) ||
+        typeof z !== "number" || !Number.isSafeInteger(z)
       ) {
         return jsonResponse({ error: "invalid_event" }, 400);
       }
@@ -200,6 +258,10 @@ export default {
       } catch {
         return jsonResponse({ error: "stored_status_invalid" }, 500);
       }
+
+      const allowedContainer = ((status as CloudStatus).containers ?? []).some(container =>
+        container.dimension === dimension && container.x === x && container.y === y && container.z === z);
+      if (!allowedContainer) return jsonResponse({ error: "container_not_registered" }, 403);
 
       const canonicalName = Object.keys(status.items ?? {})
         .find(name => normalizeItemName(name) === normalizeItemName(itemName));
