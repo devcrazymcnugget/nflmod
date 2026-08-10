@@ -156,8 +156,16 @@ export default {
         if (!status.items[targetName]) {
           status.items[targetName] = { available: count > 0, count, iconId, updatedAt: now, lastChangedBy: "", borrowedBy: "" };
           added++;
-        } else if (iconId && iconId !== "minecraft:barrier") {
-          status.items[targetName].iconId = iconId;
+        } else {
+          if (iconId && iconId !== "minecraft:barrier") status.items[targetName].iconId = iconId;
+          // Ein tatsächlich wieder in einer Admin-Kiste gefundenes Item ist eine
+          // autoritative Rückgabe, selbst wenn ein Client-Ereignis verloren ging.
+          if (count > 0 && status.items[targetName].available === false) {
+            status.items[targetName].count = count;
+            status.items[targetName].available = true;
+            status.items[targetName].borrowedBy = "";
+            status.items[targetName].updatedAt = now;
+          }
         }
       }
       if (rawContainer !== undefined) {
