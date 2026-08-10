@@ -54,6 +54,37 @@ async function syncBotLoanEvent(
   }
 }
 
+async function getPlayerLoans(env: Env, playerName: string): Promise<{ ok: boolean; loans: unknown[]; reason?: string }> {
+  if (!env.BOT_API_KEY) return { ok: false, loans: [], reason: "bot_api_key_missing" };
+  try {
+    const headers = { "X-API-Key": env.BOT_API_KEY, "Accept": "application/json" };
+    const [linksResponse, loansResponse] = await Promise.all([
+      fetch(`${BOT_API_BASE}/api/minecraft/links`, { headers }),
+      fetch(`${BOT_API_BASE}/api/loans`, { headers }),
+    ]);
+    if (!linksResponse.ok || !loansResponse.ok) {
+      return { ok: false, loans: [], reason: `bot_api_http_${linksResponse.status}_${loansResponse.status}` };
+    }
+    const links = await linksResponse.json() as Array<{ minecraft_name?: string; user_id?: number }>;
+    const loans = await loansResponse.json() as Array<{
+      user_id?: number; item_name?: string; borrowed_at?: number; due_at?: number; returned_at?: number | null;
+    }>;
+    const link = Array.isArray(links) ? links.find(candidate =>
+      typeof candidate.minecraft_name === "string" && normalizeItemName(candidate.minecraft_name) === normalizeItemName(playerName)) : undefined;
+    if (!link || typeof link.user_id !== "number") return { ok: true, loans: [] };
+    const active = Array.isArray(loans) ? loans
+      .filter(loan => loan.user_id === link.user_id && (loan.returned_at === null || loan.returned_at === undefined))
+      .map(loan => ({
+        itemName: typeof loan.item_name === "string" ? loan.item_name : "Unbekanntes Item",
+        borrowedAt: Number(loan.borrowed_at ?? 0),
+        dueAt: Number(loan.due_at ?? 0),
+      })) : [];
+    return { ok: true, loans: active };
+  } catch {
+    return { ok: false, loans: [], reason: "bot_api_unreachable" };
+  }
+}
+
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, PUT, POST, OPTIONS",
@@ -93,6 +124,13 @@ export default {
           "Cache-Control": "no-store",
         },
       });
+    }
+
+    if (request.method === "GET" && url.pathname === "/loans") {
+      const playerName = (url.searchParams.get("playerName") ?? "").trim();
+      if (!playerName || playerName.length > 64) return jsonResponse({ error: "invalid_player_name" }, 400);
+      const result = await getPlayerLoans(env, playerName);
+      return jsonResponse(result, result.ok ? 200 : 502);
     }
 
     if (request.method === "PUT" && url.pathname === "/status") {
