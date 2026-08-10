@@ -23,6 +23,17 @@ type TrackedContainer = {
   type?: string;
 };
 
+type PriceEntry = {
+  name: string;
+  material?: string;
+  average: number;
+  last: number;
+  min: number;
+  max: number;
+  sales: number;
+  lastSaleAt?: string;
+};
+
 async function syncBotLoanEvent(
   env: Env,
   itemName: string,
@@ -131,6 +142,25 @@ export default {
       if (!playerName || playerName.length > 64) return jsonResponse({ error: "invalid_player_name" }, 400);
       const result = await getPlayerLoans(env, playerName);
       return jsonResponse(result, result.ok ? 200 : 502);
+    }
+
+    if (request.method === "GET" && url.pathname === "/prices") {
+      const query = (url.searchParams.get("q") ?? "").trim();
+      if (!query || query.length > 128) return jsonResponse({ error: "invalid_query" }, 400);
+      const stored = await env.USER_NOTIFICATION.get("opitems-price-index");
+      if (stored === null) return jsonResponse({ ok: true, updatedAt: "", matches: [] });
+      const index = JSON.parse(stored) as { updatedAt?: string; items?: PriceEntry[] };
+      const wanted = normalizeItemName(query);
+      const matches = (Array.isArray(index.items) ? index.items : [])
+        .filter(item => normalizeItemName(item.name).includes(wanted))
+        .sort((a, b) => {
+          const aName = normalizeItemName(a.name);
+          const bName = normalizeItemName(b.name);
+          const aScore = aName === wanted ? 0 : aName.startsWith(wanted) ? 1 : 2;
+          const bScore = bName === wanted ? 0 : bName.startsWith(wanted) ? 1 : 2;
+          return aScore - bScore || b.sales - a.sales || aName.localeCompare(bName, "de");
+        }).slice(0, 20);
+      return jsonResponse({ ok: true, updatedAt: index.updatedAt ?? "", matches });
     }
 
     if (request.method === "PUT" && url.pathname === "/status") {
@@ -273,6 +303,44 @@ export default {
       status.updatedAt = new Date().toISOString();
       await env.USER_NOTIFICATION.put("nfl-loan-status", JSON.stringify(status));
       return jsonResponse({ ok: true, containers: containers.length });
+    }
+
+    if (request.method === "PUT" && url.pathname === "/admin/prices") {
+      const authorization = request.headers.get("Authorization") ?? "";
+      if (!env.NFL_WRITE_TOKEN || authorization !== `Bearer ${env.NFL_WRITE_TOKEN}`) {
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      const body = await request.text();
+      if (body.length > 8_000_000) return jsonResponse({ error: "payload_too_large" }, 413);
+      let parsed: { updatedAt?: unknown; items?: unknown };
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        return jsonResponse({ error: "invalid_json" }, 400);
+      }
+      if (!Array.isArray(parsed.items) || parsed.items.length > 50_000) {
+        return jsonResponse({ error: "invalid_price_index" }, 400);
+      }
+      const items: PriceEntry[] = [];
+      for (const raw of parsed.items) {
+        if (typeof raw !== "object" || raw === null) continue;
+        const item = raw as Partial<PriceEntry>;
+        if (typeof item.name !== "string" || !item.name.trim() || item.name.length > 256) continue;
+        const numbers = [item.average, item.last, item.min, item.max, item.sales];
+        if (numbers.some(value => typeof value !== "number" || !Number.isFinite(value) || value < 0)) continue;
+        items.push({
+          name: item.name.trim(), material: typeof item.material === "string" ? item.material.slice(0, 128) : "",
+          average: Math.round(item.average as number), last: Math.round(item.last as number),
+          min: Math.round(item.min as number), max: Math.round(item.max as number),
+          sales: Math.floor(item.sales as number),
+          lastSaleAt: typeof item.lastSaleAt === "string" ? item.lastSaleAt.slice(0, 64) : "",
+        });
+      }
+      const payload = JSON.stringify({
+        updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(), items,
+      });
+      await env.USER_NOTIFICATION.put("opitems-price-index", payload);
+      return jsonResponse({ ok: true, items: items.length });
     }
 
     if (request.method === "POST" && url.pathname === "/event") {

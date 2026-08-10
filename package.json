@@ -4,6 +4,7 @@
 	"private": true,
 	"scripts": {
 		"deploy": "wrangler deploy",
+		"sync-prices": "node scripts/sync-opitems-prices.mjs",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
 		"test": "vitest",
