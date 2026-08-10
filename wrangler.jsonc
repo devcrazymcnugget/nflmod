@@ -10,9 +10,6 @@
 	"observability": {
 		"enabled": true
 	},
-	"triggers": {
-		"crons": ["*/2 * * * *"]
-	},
 	"kv_namespaces": [
 		{
 		"binding": "USER_NOTIFICATION",
