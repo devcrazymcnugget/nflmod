@@ -124,6 +124,44 @@ export default {
       return jsonResponse({ ok: true, service: "nflmod-sync", botApi: BOT_API_BASE, botApiConfigured: Boolean(env.BOT_API_KEY) });
     }
 
+    if (request.method === "GET" && url.pathname === "/cosmetics") {
+      const stored = await env.USER_NOTIFICATION.get("nfl-public-cosmetics");
+      const registry = stored === null ? { updatedAt: "", players: {} as Record<string, any> } : JSON.parse(stored);
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const players = Object.fromEntries(Object.entries(registry.players ?? {}).filter(([, raw]) => {
+        const lastSeen = Date.parse(String((raw as { lastSeen?: unknown }).lastSeen ?? ""));
+        return Number.isFinite(lastSeen) && lastSeen >= cutoff;
+      }));
+      return jsonResponse({ updatedAt: registry.updatedAt ?? "", players });
+    }
+
+    if (request.method === "POST" && url.pathname === "/cosmetics") {
+      let body: { playerName?: unknown; playerUuid?: unknown; enabled?: unknown; effect?: unknown; density?: unknown };
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse({ error: "invalid_json" }, 400);
+      }
+      const playerName = typeof body.playerName === "string" ? body.playerName.trim() : "";
+      const playerUuid = typeof body.playerUuid === "string" ? body.playerUuid.trim() : "";
+      const enabled = body.enabled === true;
+      const effect = body.effect === "money" ? "money" : "none";
+      const density = body.density === "low" || body.density === "high" ? body.density : "normal";
+      if (!/^[A-Za-z0-9_]{1,32}$/.test(playerName) || !/^[A-Fa-f0-9-]{32,36}$/.test(playerUuid)) {
+        return jsonResponse({ error: "invalid_player" }, 400);
+      }
+      const stored = await env.USER_NOTIFICATION.get("nfl-public-cosmetics");
+      const registry = stored === null ? { updatedAt: "", players: {} as Record<string, any> } : JSON.parse(stored);
+      if (!registry.players || typeof registry.players !== "object") registry.players = {};
+      const now = new Date().toISOString();
+      registry.players[playerName.toLocaleLowerCase("de-DE")] = {
+        playerName, playerUuid, enabled, effect, density, lastSeen: now,
+      };
+      registry.updatedAt = now;
+      await env.USER_NOTIFICATION.put("nfl-public-cosmetics", JSON.stringify(registry));
+      return jsonResponse({ ok: true });
+    }
+
     if (request.method === "GET" && url.pathname === "/status") {
       const stored = await env.USER_NOTIFICATION.get("nfl-loan-status");
       if (stored === null) return jsonResponse({ updatedAt: "", items: {} });
