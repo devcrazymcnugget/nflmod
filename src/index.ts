@@ -7,6 +7,9 @@ export interface Env {
 
 const BOT_API_BASE = "http://crazys-stuff.de:49844";
 const normalizeItemName = (name: string): string => name.trim().toLocaleLowerCase("de-DE");
+const MONEY_COLORS = ["green", "blue", "red", "purple", "gold"] as const;
+const validMoneyColor = (value: unknown): value is typeof MONEY_COLORS[number] =>
+  typeof value === "string" && (MONEY_COLORS as readonly string[]).includes(value);
 
 type CloudStatus = {
   updatedAt: string;
@@ -136,7 +139,7 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/cosmetics") {
-      let body: { playerName?: unknown; playerUuid?: unknown; enabled?: unknown; effect?: unknown; density?: unknown };
+      let body: { playerName?: unknown; playerUuid?: unknown; enabled?: unknown; effect?: unknown; density?: unknown; color?: unknown };
       try {
         body = await request.json();
       } catch {
@@ -147,19 +150,74 @@ export default {
       const enabled = body.enabled === true;
       const effect = body.effect === "money" ? "money" : "none";
       const density = body.density === "low" || body.density === "high" ? body.density : "normal";
+      const color = validMoneyColor(body.color) ? body.color : "green";
       if (!/^[A-Za-z0-9_]{1,32}$/.test(playerName) || !/^[A-Fa-f0-9-]{32,36}$/.test(playerUuid)) {
         return jsonResponse({ error: "invalid_player" }, 400);
       }
+      const inventoryStored = await env.USER_NOTIFICATION.get(`cosmetic-inventory:${playerUuid.toLowerCase()}`);
+      const inventory = inventoryStored === null ? { colors: ["green"] } : JSON.parse(inventoryStored);
+      const ownedColors = Array.isArray(inventory.colors) ? inventory.colors.filter(validMoneyColor) : ["green"];
+      if (color !== "green" && !ownedColors.includes(color)) return jsonResponse({ error: "cosmetic_not_owned" }, 403);
       const stored = await env.USER_NOTIFICATION.get("nfl-public-cosmetics");
       const registry = stored === null ? { updatedAt: "", players: {} as Record<string, any> } : JSON.parse(stored);
       if (!registry.players || typeof registry.players !== "object") registry.players = {};
       const now = new Date().toISOString();
       registry.players[playerName.toLocaleLowerCase("de-DE")] = {
-        playerName, playerUuid, enabled, effect, density, lastSeen: now,
+        playerName, playerUuid, enabled, effect, density, color, lastSeen: now,
       };
       registry.updatedAt = now;
       await env.USER_NOTIFICATION.put("nfl-public-cosmetics", JSON.stringify(registry));
       return jsonResponse({ ok: true });
+    }
+
+    if (request.method === "GET" && url.pathname === "/cosmetics/inventory") {
+      const playerUuid = (url.searchParams.get("playerUuid") ?? "").trim().toLowerCase();
+      if (!/^[a-f0-9-]{32,36}$/.test(playerUuid)) return jsonResponse({ error: "invalid_player" }, 400);
+      const stored = await env.USER_NOTIFICATION.get(`cosmetic-inventory:${playerUuid}`);
+      const inventory = stored === null ? { colors: ["green"] } : JSON.parse(stored);
+      const colors = Array.from(new Set(["green", ...(Array.isArray(inventory.colors) ? inventory.colors : [])]))
+        .filter(validMoneyColor);
+      return jsonResponse({ ok: true, colors });
+    }
+
+    if (request.method === "POST" && url.pathname === "/cosmetics/redeem") {
+      let body: { playerName?: unknown; playerUuid?: unknown; code?: unknown };
+      try { body = await request.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
+      const playerName = typeof body.playerName === "string" ? body.playerName.trim() : "";
+      const playerUuid = typeof body.playerUuid === "string" ? body.playerUuid.trim().toLowerCase() : "";
+      const code = typeof body.code === "string" ? body.code.trim().toUpperCase() : "";
+      if (!/^[A-Za-z0-9_]{1,32}$/.test(playerName) || !/^[a-f0-9-]{32,36}$/.test(playerUuid)
+          || !/^[A-Z0-9-]{4,24}$/.test(code)) return jsonResponse({ error: "invalid_request" }, 400);
+      const codeKey = `cosmetic-code:${code}`;
+      const codeStored = await env.USER_NOTIFICATION.get(codeKey);
+      if (codeStored === null) return jsonResponse({ error: "code_not_found" }, 404);
+      const cosmeticCode = JSON.parse(codeStored);
+      if (cosmeticCode.redeemedBy) return jsonResponse({ error: "code_already_redeemed" }, 409);
+      if (!validMoneyColor(cosmeticCode.color)) return jsonResponse({ error: "invalid_code" }, 400);
+      const inventoryKey = `cosmetic-inventory:${playerUuid}`;
+      const inventoryStored = await env.USER_NOTIFICATION.get(inventoryKey);
+      const inventory = inventoryStored === null ? { colors: ["green"] } : JSON.parse(inventoryStored);
+      const colors = Array.from(new Set(["green", ...(Array.isArray(inventory.colors) ? inventory.colors : []), cosmeticCode.color]))
+        .filter(validMoneyColor);
+      const now = new Date().toISOString();
+      await env.USER_NOTIFICATION.put(inventoryKey, JSON.stringify({ playerName, colors, updatedAt: now }));
+      await env.USER_NOTIFICATION.put(codeKey, JSON.stringify({ ...cosmeticCode, redeemedBy: playerUuid, redeemedByName: playerName, redeemedAt: now }));
+      return jsonResponse({ ok: true, color: cosmeticCode.color, colors });
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/cosmetic-codes") {
+      const authorization = request.headers.get("Authorization") ?? "";
+      if (!env.NFL_WRITE_TOKEN || authorization !== `Bearer ${env.NFL_WRITE_TOKEN}`) return jsonResponse({ error: "unauthorized" }, 401);
+      let body: { code?: unknown; color?: unknown };
+      try { body = await request.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
+      if (!validMoneyColor(body.color) || body.color === "green") return jsonResponse({ error: "invalid_color" }, 400);
+      const requested = typeof body.code === "string" ? body.code.trim().toUpperCase() : "";
+      const code = requested || crypto.randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase();
+      if (!/^[A-Z0-9-]{4,24}$/.test(code)) return jsonResponse({ error: "invalid_code" }, 400);
+      const key = `cosmetic-code:${code}`;
+      if (await env.USER_NOTIFICATION.get(key) !== null) return jsonResponse({ error: "code_exists" }, 409);
+      await env.USER_NOTIFICATION.put(key, JSON.stringify({ code, color: body.color, createdAt: new Date().toISOString(), redeemedBy: null }));
+      return jsonResponse({ ok: true, code, color: body.color });
     }
 
     if (request.method === "GET" && url.pathname === "/status") {
