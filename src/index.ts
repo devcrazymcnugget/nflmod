@@ -11,7 +11,8 @@ const MONEY_COLORS = ["green", "blue", "red", "purple", "gold"] as const;
 const validMoneyColor = (value: unknown): value is typeof MONEY_COLORS[number] =>
   typeof value === "string" && (MONEY_COLORS as readonly string[]).includes(value);
 const COSMETIC_IDS = ["money_green", "money_blue", "money_red", "money_purple", "money_gold",
-  "ice_aura", "axolotl_aura", "flame_aura", "heart_aura", "star_aura"] as const;
+  "ice_aura", "flame_aura", "heart_aura", "star_aura", "pet_fox", "pet_cat", "pet_frog", "pet_bee"] as const;
+const PET_IDS = ["none", "pet_fox", "pet_cat", "pet_frog", "pet_bee"] as const;
 const ICE_STYLES = ["frost", "fire", "ruby", "rainbow", "amethyst", "emerald", "shadow", "gold"] as const;
 const validCosmeticId = (value: unknown): value is typeof COSMETIC_IDS[number] =>
   typeof value === "string" && (COSMETIC_IDS as readonly string[]).includes(value);
@@ -151,7 +152,7 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/cosmetics") {
       let body: { playerName?: unknown; playerUuid?: unknown; enabled?: unknown; effect?: unknown; aura?: unknown;
-        hat?: unknown; density?: unknown; color?: unknown; iceStyle?: unknown };
+        hat?: unknown; density?: unknown; color?: unknown; iceStyle?: unknown; pet?: unknown };
       try {
         body = await request.json();
       } catch {
@@ -161,12 +162,13 @@ export default {
       const playerUuid = typeof body.playerUuid === "string" ? body.playerUuid.trim() : "";
       const enabled = body.enabled === true;
       const requestedAura = typeof body.aura === "string" ? body.aura : body.effect;
-      const aura = requestedAura === "money" || requestedAura === "ice" || requestedAura === "axolotl"
+      const aura = requestedAura === "money" || requestedAura === "ice"
         || requestedAura === "flame" || requestedAura === "heart" || requestedAura === "star"
         ? requestedAura : "none";
       const hat = "none";
       const iceStyle = typeof body.iceStyle === "string" && (ICE_STYLES as readonly string[]).includes(body.iceStyle)
         ? body.iceStyle : "frost";
+      const pet = typeof body.pet === "string" && (PET_IDS as readonly string[]).includes(body.pet) ? body.pet : "none";
       const density = body.density === "low" || body.density === "high" ? body.density : "normal";
       const color = validMoneyColor(body.color) ? body.color : "green";
       if (!/^[A-Za-z0-9_]{1,32}$/.test(playerName) || !/^[A-Fa-f0-9-]{32,36}$/.test(playerUuid)) {
@@ -176,15 +178,16 @@ export default {
       const inventory = inventoryStored === null ? { cosmetics: ["money_green"] } : JSON.parse(inventoryStored);
       const owned = ownedCosmetics(inventory);
       const auraId = aura === "money" ? `money_${color}` : aura === "ice" ? "ice_aura"
-        : aura === "axolotl" ? "axolotl_aura" : aura === "flame" ? "flame_aura"
+        : aura === "flame" ? "flame_aura"
         : aura === "heart" ? "heart_aura" : aura === "star" ? "star_aura" : "";
       if (auraId && !owned.includes(auraId)) return jsonResponse({ error: "cosmetic_not_owned" }, 403);
+      if (pet !== "none" && !owned.includes(pet)) return jsonResponse({ error: "pet_not_owned" }, 403);
       const stored = await env.USER_NOTIFICATION.get("nfl-public-cosmetics");
       const registry = stored === null ? { updatedAt: "", players: {} as Record<string, any> } : JSON.parse(stored);
       if (!registry.players || typeof registry.players !== "object") registry.players = {};
       const now = new Date().toISOString();
       registry.players[playerName.toLocaleLowerCase("de-DE")] = {
-        playerName, playerUuid, enabled, effect: aura, aura, hat, density, color, iceStyle, lastSeen: now,
+        playerName, playerUuid, enabled, effect: aura, aura, hat, density, color, iceStyle, pet, lastSeen: now,
       };
       registry.updatedAt = now;
       await env.USER_NOTIFICATION.put("nfl-public-cosmetics", JSON.stringify(registry));
